@@ -161,6 +161,10 @@ agentk8sglue:
       #      /bin/echo "this is an init";
     # -- schedulerName setup for pods spawned to consume ClearML Task
     schedulerName: ""
+    # -- runtimeClassName for pods spawned to consume ClearML Task (e.g. "nvidia" on K3s)
+    runtimeClassName: ""
+    # -- hostPID for pods spawned to consume ClearML Task (required by some vGPU schedulers for compute isolation)
+    hostPID: false
     # -- volumes definition for pods spawned to consume ClearML Task (example in values.yaml comments)
     volumes: []
       # - name: "yourvolume"

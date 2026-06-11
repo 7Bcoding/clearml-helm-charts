@@ -12,6 +12,15 @@ data:
       annotations:
       {{- toYaml $.Values.agentk8sglue.basePodTemplate.annotations | nindent 8 }}
     spec:
+      {{- if .Values.agentk8sglue.basePodTemplate.schedulerName }}
+      schedulerName: {{ .Values.agentk8sglue.basePodTemplate.schedulerName }}
+      {{- end }}
+      {{- if .Values.agentk8sglue.basePodTemplate.runtimeClassName }}
+      runtimeClassName: {{ .Values.agentk8sglue.basePodTemplate.runtimeClassName }}
+      {{- end }}
+      {{- if .Values.agentk8sglue.basePodTemplate.hostPID }}
+      hostPID: true
+      {{- end }}
       {{- if .Values.imageCredentials.enabled }}
       imagePullSecrets:
       {{- if .Values.imageCredentials.existingSecret }}
