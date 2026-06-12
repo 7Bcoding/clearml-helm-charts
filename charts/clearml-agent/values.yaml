@@ -88,7 +88,7 @@ agentk8sglue:
   createQueueIfNotExists: false
 
   # Per-task Volcano vGPU via Task.connect(..., name="VGPU") in the SDK.
-  # Requires agentk8sglue.vgpuHook.enabled=true (open-source PYTHONSTARTUP patch).
+  # Requires agentk8sglue.vgpuHook.enabled=true (custom vgpu_glue_entrypoint.sh).
   # vgpu_memory unit must match volcano-vgpu-device-plugin --gpu-memory-factor:
   #   factor=1024 -> SDK/WebUI values are GiB integers (2 = 2GB)
   #   factor=1    -> values are MiB (2048 = 2GB)

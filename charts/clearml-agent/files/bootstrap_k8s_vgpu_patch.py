@@ -1,8 +1,7 @@
 """Install k8s-glue hooks for per-task Volcano vGPU (open-source agent).
 
-Patches are applied when this file runs (PYTHONSTARTUP or explicit pre-start).
-The kubectl yaml.dump hook applies vGPU limits after the agent merges its
-container into the base pod template (the correct timing).
+Loaded by run_k8s_glue_with_vgpu_hook.py in the same Python process as k8s-glue.
+(Python 3 PYTHONSTARTUP is interactive-only and does not run for scripts.)
 """
 from __future__ import print_function
 

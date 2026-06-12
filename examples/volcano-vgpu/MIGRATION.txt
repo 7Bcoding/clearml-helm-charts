@@ -18,9 +18,12 @@ ClearML + Volcano vGPU 迁移 Checklist
       helm upgrade --install clearml-agent ./charts/clearml-agent \
         -n clearml -f examples/volcano-vgpu/custom_values.yaml
 
-[ ] 4. 验证 agent patch 生效
-      kubectl logs deploy/clearml-agent -n clearml | grep vgpu-hook
-      期望: K8sIntegration._resolve_template patched
+[ ] 4. 验证 agent patch 生效 (agent 重启后看启动日志, 不是 --tail=30)
+      kubectl rollout restart deploy/clearml-agent -n clearml
+      kubectl logs deploy/clearml-agent -n clearml --since=2m | grep vgpu-hook
+      期望:
+        K8sIntegration._kubectl_apply patched
+        starting k8s glue:
 
 [ ] 5. 确认 basePodTemplate 仍有 schedulerName/runtimeClassName/hostPID
       kubectl get cm clearml-agent-pt -n clearml -o yaml | grep -E schedulerName|runtimeClassName|hostPID
