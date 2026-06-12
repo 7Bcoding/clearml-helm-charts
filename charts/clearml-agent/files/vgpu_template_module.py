@@ -58,11 +58,27 @@ def _param_value(section, name):
         return None
     if isinstance(entry, dict):
         value = entry.get("value")
+        if value is None and len(entry) == 1:
+            value = next(iter(entry.values()))
     else:
         value = entry
     if value is None or value == "":
         return None
     return value
+
+
+def _section_with_vgpu_keys(hyperparams, preferred_section):
+    if not isinstance(hyperparams, dict):
+        return None, preferred_section
+    section = hyperparams.get(preferred_section)
+    if isinstance(section, dict) and any(_param_value(section, key) is not None for key in VGPU_LIMIT_KEYS):
+        return section, preferred_section
+    for name, candidate in hyperparams.items():
+        if not isinstance(candidate, dict):
+            continue
+        if any(_param_value(candidate, key) is not None for key in VGPU_LIMIT_KEYS):
+            return candidate, name
+    return None, preferred_section
 
 
 def _warn_legacy_mib_value(param_key, value, factor):
@@ -72,7 +88,6 @@ def _warn_legacy_mib_value(param_key, value, factor):
         numeric = int(float(value))
     except (TypeError, ValueError):
         return
-    # Values like 2048/6144 on factor=1024 clusters are almost always old MiB configs.
     if numeric > 64:
         print(
             "[vgpu-hook] WARNING: vgpu_memory=%s looks like legacy MiB; "
@@ -84,9 +99,12 @@ def _warn_legacy_mib_value(param_key, value, factor):
 def extract_vgpu_params(task_data, section_name=None):
     section_name = section_name or vgpu_section_name()
     hyperparams = _task_hyperparams(task_data)
-    section = hyperparams.get(section_name)
+    section, resolved_section = _section_with_vgpu_keys(hyperparams, section_name)
     if not section:
         return {}
+
+    if resolved_section != section_name:
+        print("[vgpu-hook] using hyperparam section %r (configured=%r)" % (resolved_section, section_name))
 
     factor = DEFAULT_MEMORY_FACTOR
     params = {}
@@ -97,15 +115,48 @@ def extract_vgpu_params(task_data, section_name=None):
             try:
                 numeric = int(float(value))
                 if numeric < 1:
-                    print("[vgpu-hook] ignore non-positive %s/%s=%r" % (section_name, key, value))
+                    print("[vgpu-hook] ignore non-positive %s/%s=%r" % (resolved_section, key, value))
                     continue
                 if key == "vgpu_cores" and not (0 < numeric <= 100):
-                    print("[vgpu-hook] ignore out-of-range %s/%s=%r" % (section_name, key, value))
+                    print("[vgpu-hook] ignore out-of-range %s/%s=%r" % (resolved_section, key, value))
                     continue
                 params[key] = numeric
             except (TypeError, ValueError):
-                print("[vgpu-hook] ignore invalid %s/%s=%r" % (section_name, key, value))
+                print("[vgpu-hook] ignore invalid %s/%s=%r" % (resolved_section, key, value))
     return params
+
+
+def fetch_task_data(session, task_id):
+    if not session or not task_id:
+        return {}
+    try:
+        data = session.get(service="tasks", action="get_by_id", task=task_id)
+        if isinstance(data, dict):
+            return data.get("task") or data
+    except Exception as exc:
+        print("[vgpu-hook] get_by_id failed task=%s: %s" % (task_id, exc))
+    try:
+        data = session.get(service="tasks", action="get_all", version="2.13", id=[task_id])
+        tasks = (data or {}).get("tasks") or []
+        if tasks:
+            return tasks[0]
+    except Exception as exc:
+        print("[vgpu-hook] get_all failed task=%s: %s" % (task_id, exc))
+    return {}
+
+
+def resolve_vgpu_params(task_data, task_id=None, session=None):
+    params = extract_vgpu_params(task_data)
+    if params:
+        return params
+    if session and task_id:
+        refreshed = fetch_task_data(session, task_id)
+        if refreshed:
+            params = extract_vgpu_params(refreshed)
+            if params:
+                print("[vgpu-hook] task=%s loaded VGPU params from API refresh" % task_id)
+                return params
+    return {}
 
 
 def log_missing_vgpu_params(task_data, task_id=None):
@@ -137,14 +188,21 @@ def apply_vgpu_params(template, params):
         print("[vgpu-hook] template has no containers, skip vGPU override")
         return template
 
-    limits = containers[0].setdefault("resources", {}).setdefault("limits", {})
+    resources = containers[0].setdefault("resources", {})
+    limits = resources.setdefault("limits", {})
+    requests = resources.setdefault("requests", {})
+    applied = {}
     for param_key, k8s_key in VGPU_LIMIT_KEYS.items():
         if param_key in params:
-            limits[k8s_key] = str(params[param_key])
+            value = str(params[param_key])
+            limits[k8s_key] = value
+            requests[k8s_key] = value
+            applied[k8s_key] = value
 
     metadata = template.setdefault("metadata", {})
     annotations = metadata.setdefault("annotations", {})
     annotations.setdefault("volcano.sh/vgpu-mode", "hami-core")
+    print("[vgpu-hook] applied pod resources: %s" % applied)
     return template
 
 
@@ -179,7 +237,6 @@ def update_template(
 
 
 def patch_template_for_task(template, task_data, task_id=None, queue_name=None):
-    """Used by the open-source PYTHONSTARTUP monkey-patch."""
     params = extract_vgpu_params(task_data)
     if params:
         print(

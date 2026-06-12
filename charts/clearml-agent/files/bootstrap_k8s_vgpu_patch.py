@@ -32,11 +32,15 @@ def _install_patch():
     def _kubectl_apply_with_vgpu(self, *args, **kwargs):
         task_data = kwargs.get("task_data")
         task_id = kwargs.get("task_id")
-        if task_data is None and len(args) >= 14:
-            task_id = args[7]
-            task_data = args[13]
+        if task_data is None and len(args) >= 15:
+            task_id = args[8]
+            task_data = args[14]
 
-        params = vgpu_template_module.extract_vgpu_params(task_data)
+        params = vgpu_template_module.resolve_vgpu_params(
+            task_data,
+            task_id=task_id,
+            session=getattr(self, "_session", None),
+        )
         if not params:
             vgpu_template_module.log_missing_vgpu_params(task_data, task_id=task_id)
         else:

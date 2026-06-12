@@ -167,6 +167,7 @@ def main() -> None:
     if int(mem_param) != int(args.memory):
         print("WARNING: hyperparam not persisted; agent will use basePodTemplate default")
 
+    task.flush(wait_for_uploads=True)
     task.execute_remotely(queue_name=args.queue, exit_process=True)
 
     logger = task.get_logger()
