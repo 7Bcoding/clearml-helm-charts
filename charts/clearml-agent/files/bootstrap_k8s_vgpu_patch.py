@@ -1,4 +1,9 @@
-"""Install K8sIntegration._resolve_template patch for per-task vGPU (open-source agent)."""
+"""Install k8s-glue hooks for per-task Volcano vGPU (open-source agent).
+
+Patches are applied when this file runs (PYTHONSTARTUP or explicit pre-start).
+The kubectl yaml.dump hook applies vGPU limits after the agent merges its
+container into the base pod template (the correct timing).
+"""
 from __future__ import print_function
 
 import os
@@ -11,8 +16,10 @@ if _HOOK_DIR not in sys.path:
 
 def _install_patch():
     try:
+        from clearml_agent.glue import k8s as k8s_module
         from clearml_agent.glue.k8s import K8sIntegration
-    except ImportError:
+    except ImportError as exc:
+        print("[vgpu-hook] import clearml_agent failed, patch skipped: %s" % exc)
         return
 
     if getattr(K8sIntegration, "_clearml_vgpu_hook_installed", False):
@@ -20,26 +27,41 @@ def _install_patch():
 
     import vgpu_template_module
 
-    original = K8sIntegration._resolve_template
+    if not hasattr(K8sIntegration, "_kubectl_apply_original"):
+        K8sIntegration._kubectl_apply_original = K8sIntegration._kubectl_apply
 
-    def _resolve_template_with_vgpu(self, task_session, task_data, queue, task_id):
-        template = original(self, task_session, task_data, queue, task_id)
-        if not template:
-            return template
-        try:
-            return vgpu_template_module.patch_template_for_task(
-                template,
-                task_data,
-                task_id=task_id,
-                queue_name=queue,
+    def _kubectl_apply_with_vgpu(self, *args, **kwargs):
+        task_data = kwargs.get("task_data")
+        task_id = kwargs.get("task_id")
+        if task_data is None and len(args) >= 14:
+            task_id = args[7]
+            task_data = args[13]
+
+        params = vgpu_template_module.extract_vgpu_params(task_data)
+        if not params:
+            vgpu_template_module.log_missing_vgpu_params(task_data, task_id=task_id)
+        else:
+            print(
+                "[vgpu-hook] task=%s will override %s"
+                % (task_id, " ".join("%s=%s" % (k, v) for k, v in sorted(params.items())))
             )
-        except Exception as ex:
-            print("[vgpu-hook] failed to patch template for task %s: %s" % (task_id, ex))
-            return template
 
-    K8sIntegration._resolve_template = _resolve_template_with_vgpu
+        orig_dump = k8s_module.yaml.dump
+
+        def dump_with_vgpu(document, stream, **dump_kwargs):
+            if params and isinstance(document, dict):
+                document = vgpu_template_module.apply_vgpu_params(document, params)
+            return orig_dump(document, stream, **dump_kwargs)
+
+        k8s_module.yaml.dump = dump_with_vgpu
+        try:
+            return K8sIntegration._kubectl_apply_original(self, *args, **kwargs)
+        finally:
+            k8s_module.yaml.dump = orig_dump
+
+    K8sIntegration._kubectl_apply = _kubectl_apply_with_vgpu
     K8sIntegration._clearml_vgpu_hook_installed = True
-    print("[vgpu-hook] K8sIntegration._resolve_template patched (dir=%s)" % _HOOK_DIR)
+    print("[vgpu-hook] K8sIntegration._kubectl_apply patched (dir=%s)" % _HOOK_DIR)
 
 
 _install_patch()

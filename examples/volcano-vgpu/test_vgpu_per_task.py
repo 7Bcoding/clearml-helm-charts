@@ -6,11 +6,19 @@
 
     python test_vgpu_per_task.py --memory 2 --cores 30
     python test_vgpu_per_task.py --memory 6 --cores 50
+    python test_vgpu_per_task.py --memory 6 --cores 50
     python test_vgpu_per_task.py --vgpu-number 2 --memory 2 --cores 30
+
+K8s agent 无 SSH 密钥时 (推荐单文件, 免 git clone):
+    python test_vgpu_per_task.py --standalone --memory 4 --cores 30
+
+或显式 HTTPS + 已 push 的 commit:
+    python test_vgpu_per_task.py --repo-url https://github.com/7Bcoding/clearml-helm-charts.git --repo-branch main --memory 4 --cores 30
 """
 from __future__ import annotations
 
 import argparse
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -21,6 +29,38 @@ Task.add_requirements(str(Path(__file__).resolve().parent / "requirements-remote
 
 GPU_MEMORY_FACTOR = 1024
 MEMORY_TOLERANCE = 0.15
+
+
+def ssh_repo_to_https(url: str) -> str:
+    if not url or not url.startswith("git@"):
+        return url
+    match = re.match(r"git@([^:]+):(.+?)(?:\.git)?$", url.strip())
+    if not match:
+        return url
+    host, path = match.group(1), match.group(2).rstrip("/")
+    return "https://%s/%s.git" % (host, path)
+
+
+def prepare_remote_repo(task: Task, args: argparse.Namespace) -> None:
+    if args.standalone:
+        task.set_repo("", branch="")
+        print("remote repo: standalone script (no git clone)")
+        return
+
+    task._wait_for_repo_detection(timeout=30.0)
+    script = task.data.script
+    repo = (args.repo_url or "").strip() or (script.repository or "")
+    if not repo:
+        return
+
+    https_repo = repo if args.repo_url else ssh_repo_to_https(repo)
+    branch = (args.repo_branch or "").strip() or (script.branch or "")
+    commit = script.version_num or ""
+    if https_repo != repo:
+        print("remote repo: converted SSH -> %s" % https_repo)
+    else:
+        print("remote repo: %s branch=%s commit=%s" % (https_repo, branch or "(default)", commit[:12] if commit else ""))
+    task.set_repo(https_repo, branch=branch, commit=commit)
 
 
 def parse_args() -> argparse.Namespace:
@@ -39,6 +79,14 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="skip torch.cuda.device_count() check (nvidia-smi only)",
     )
+    group = p.add_argument_group("remote execution")
+    group.add_argument(
+        "--standalone",
+        action="store_true",
+        help="upload this script only; no git clone (recommended when agent has no SSH keys)",
+    )
+    group.add_argument("--repo-url", default="", help="override repository URL (HTTPS recommended)")
+    group.add_argument("--repo-branch", default="", help="override repository branch/tag")
     return p.parse_args()
 
 
@@ -93,6 +141,9 @@ def main() -> None:
     args = parse_args()
     failures: list[str] = []
 
+    if args.standalone:
+        Task.force_store_standalone_script(True)
+
     task = Task.init(
         project_name="volcano-vgpu",
         task_name="per-task-vgpu-test",
@@ -108,6 +159,13 @@ def main() -> None:
         },
         name="VGPU",
     )
+
+    prepare_remote_repo(task, args)
+
+    mem_param = task.get_parameter("VGPU/vgpu_memory", default=args.memory, cast=True)
+    print("submitted VGPU/vgpu_memory:", mem_param, "(CLI --memory=%s)" % args.memory)
+    if int(mem_param) != int(args.memory):
+        print("WARNING: hyperparam not persisted; agent will use basePodTemplate default")
 
     task.execute_remotely(queue_name=args.queue, exit_process=True)
 

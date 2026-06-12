@@ -34,8 +34,20 @@ def vgpu_section_name():
 
 def _task_hyperparams(task_data):
     if isinstance(task_data, dict):
-        return task_data.get("hyperparams") or {}
-    return getattr(task_data, "hyperparams", None) or {}
+        hyperparams = task_data.get("hyperparams")
+        if hyperparams:
+            return hyperparams
+        configuration = task_data.get("configuration") or {}
+        if isinstance(configuration, dict) and configuration:
+            return configuration
+        return {}
+    hyperparams = getattr(task_data, "hyperparams", None)
+    if hyperparams:
+        return hyperparams
+    configuration = getattr(task_data, "configuration", None)
+    if configuration:
+        return configuration
+    return {}
 
 
 def _param_value(section, name):
@@ -94,6 +106,18 @@ def extract_vgpu_params(task_data, section_name=None):
             except (TypeError, ValueError):
                 print("[vgpu-hook] ignore invalid %s/%s=%r" % (section_name, key, value))
     return params
+
+
+def log_missing_vgpu_params(task_data, task_id=None):
+    hyperparams = _task_hyperparams(task_data)
+    section_name = vgpu_section_name()
+    print(
+        "[vgpu-hook] task=%s no VGPU override; section=%r hyperparam_sections=%s"
+        % (task_id, section_name, sorted(hyperparams.keys()) if hyperparams else "[]")
+    )
+    section = hyperparams.get(section_name) if isinstance(hyperparams, dict) else None
+    if section:
+        print("[vgpu-hook] task=%s section keys: %s" % (task_id, sorted(section.keys())))
 
 
 def _container_paths(template):
