@@ -44,9 +44,15 @@ ClearML + Volcano vGPU 迁移 Checklist
 
 [ ] 9. 删除/停用多队列资源档 (若不再需要 volcano-queue-2g / -6g 等)
 
-[ ] 10. 本地提交验证
+[ ] 10. 本地提交验证 (显存 + GPU 数量; 失败时 Task exit code 1)
        python test_vgpu_per_task.py --memory 2 --cores 30
        python test_vgpu_per_task.py --memory 6 --cores 50
+       python test_vgpu_per_task.py --vgpu-number 2 --memory 2 --cores 30
+
+[ ] 10b. torch 显存硬隔离 + 简单训练
+       cd clearml/examples/volcano_vgpu
+       python smoke_test_vgpu.py --vgpu-memory 2 --vgpu-cores 30
+       python train_volcano_vgpu.py --remote --vgpu-memory 2 --vgpu-cores 30 --epochs 3
 
 --- 阶段 C: WebUI 复跑旧任务 ---
 
