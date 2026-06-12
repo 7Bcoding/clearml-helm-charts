@@ -1,0 +1,74 @@
+clearml:
+  existingAgentk8sglueSecret: "clearml-agent-creds"
+
+agentk8sglue:
+  image:
+    repository: "allegroai/clearml-agent-k8s-base"
+    tag: "1.24-21"
+
+  replicaCount: 1
+
+  apiServerUrlReference: "http://10.10.36.6:30008"
+  fileServerUrlReference: "http://10.10.36.6:30081"
+  webServerUrlReference: "http://10.10.36.6:30080"
+  clearmlcheckCertificate: false
+
+  # 队列
+  queue: volcano-queue
+
+  # 任务默认镜像：必须带 CUDA 运行时
+  defaultContainerImage: nvidia/cuda:12.4.1-runtime-ubuntu22.04
+
+  # SDK Task.connect(..., name="VGPU") 按任务覆盖 vGPU (需 gpu-memory-factor=1024, 单位 GiB)
+  vgpuHook:
+    enabled: true
+    section: VGPU
+    gpuMemoryFactor: 1024
+
+  createQueueIfNotExists: true
+
+  extraEnvs:
+    - name: "CLEARML_AGENT_NO_UPDATE"
+      value: "true"
+
+  # ===== 任务 Pod 模板：Volcano + vGPU 的核心配置都在这里 =====
+  basePodTemplate:
+
+    # 交给 Volcano 调度（而不是 default-scheduler）
+    schedulerName: volcano
+    runtimeClassName: nvidia
+    hostPID: true
+
+    annotations:
+      # 可选：显存隔离模式，hami-core（软隔离+拦截）或 mig
+      volcano.sh/vgpu-mode: "hami-core"
+
+    # 默认 vGPU (任务未指定 VGPU 段时使用); gpu-memory-factor=1024 时单位为 GiB
+    resources:
+      limits:
+        volcano.sh/vgpu-number: 1
+        volcano.sh/vgpu-memory: 2   # 2 GiB
+        volcano.sh/vgpu-cores: 30
+      requests:
+        cpu: "4"
+        memory: 16Gi
+
+    volumes:
+      - name: clearml-cache
+        hostPath:
+          path: /data/clearml-cache    # GPU 节点上固定目录，需事先 mkdir
+          type: DirectoryOrCreate
+    volumeMounts:
+      - name: clearml-cache
+        mountPath: /root/.clearml
+
+    # 按你的 GPU 节点实际污点配置
+    tolerations: []
+    #  - key: "nvidia.com/gpu"
+    #    operator: Exists
+    #    effect: "NoSchedule"
+
+    nodeSelector: {}
+    #  gpu-type: a100
+
+    env: []

@@ -1,0 +1,13 @@
+{{- if .Values.agentk8sglue.vgpuHook.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "clearmlAgent.fullname" . }}-vgpu-hook
+  labels:
+    {{- include "agentk8sglue.labels" . | nindent 4 }}
+data:
+  bootstrap_k8s_vgpu_patch.py: |
+{{ .Files.Get "files/bootstrap_k8s_vgpu_patch.py" | indent 4 }}
+  vgpu_template_module.py: |
+{{ .Files.Get "files/vgpu_template_module.py" | indent 4 }}
+{{- end }}

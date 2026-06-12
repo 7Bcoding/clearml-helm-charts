@@ -1,0 +1,86 @@
+ClearML + Volcano vGPU 迁移 Checklist
+========================================
+
+适用: 从「Helm 固定 vGPU / 多队列」迁移到「SDK VGPU 段 + vgpuHook」
+前提: volcano-vgpu-device-plugin --gpu-memory-factor=1024 (vgpu_memory 单位为 GiB)
+
+--- 阶段 A: 平台管理员 (一次性) ---
+
+[ ] 1. 确认 device-plugin 参数
+      kubectl -n kube-system get ds -l app=volcano-vgpu-device-plugin -o yaml | grep gpu-memory-factor
+      期望: --gpu-memory-factor=1024
+
+[ ] 2. 确认节点显存上报正常 (不是 0, 不是几万)
+      kubectl describe node <gpu-node> | grep volcano.sh/vgpu-memory
+      4090 单卡期望约 24 (GiB 单位), 不是 24576
+
+[ ] 3. 部署/升级 fork chart 并启用 hook
+      helm upgrade --install clearml-agent ./charts/clearml-agent \
+        -n clearml -f examples/volcano-vgpu/custom_values.yaml
+
+[ ] 4. 验证 agent patch 生效
+      kubectl logs deploy/clearml-agent -n clearml | grep vgpu-hook
+      期望: K8sIntegration._resolve_template patched
+
+[ ] 5. 确认 basePodTemplate 仍有 schedulerName/runtimeClassName/hostPID
+      kubectl get cm clearml-agent-pt -n clearml -o yaml | grep -E schedulerName|runtimeClassName|hostPID
+
+[ ] 6. (可选) 挂载 /root/.clearml 缓存卷, 减少重复 pip
+
+--- 阶段 B: 算法工程师 (脚本迁移) ---
+
+[ ] 7. 在 Task.init 之后、execute_remotely 之前添加 VGPU 段:
+
+      from vgpu import connect_vgpu
+      connect_vgpu(task, vgpu_memory=2, vgpu_cores=30)
+
+      或:
+      task.connect({"vgpu_number":1,"vgpu_memory":2,"vgpu_cores":30,"gpu_memory_factor":1024}, name="VGPU")
+
+[ ] 8. 旧 MiB 值换算 (factor=1024):
+      2048 MiB -> vgpu_memory=2
+      6144 MiB -> vgpu_memory=6
+      12288 MiB -> vgpu_memory=12
+
+[ ] 9. 删除/停用多队列资源档 (若不再需要 volcano-queue-2g / -6g 等)
+
+[ ] 10. 本地提交验证
+       python test_vgpu_per_task.py --memory 2 --cores 30
+       python test_vgpu_per_task.py --memory 6 --cores 50
+
+--- 阶段 C: WebUI 复跑旧任务 ---
+
+[ ] 11. 打开历史 Task -> 右键 Clone (保留代码与配置)
+
+[ ] 12. CONFIGURATION -> 添加或编辑 VGPU 段:
+       vgpu_number  = 1
+       vgpu_memory  = 2        (GiB, 不是 2048)
+       vgpu_cores   = 30
+       gpu_memory_factor = 1024
+
+[ ] 13. 删除/忽略旧的 Resource 段里仅作记录的 vgpu_memory_mb (不会驱动 K8s)
+
+[ ] 14. EXECUTION -> 队列选 volcano-queue -> Enqueue
+
+[ ] 15. 验证新 Pod
+       kubectl get pod -n clearml | grep clearml-id
+       kubectl get pod <pod> -n clearml -o yaml | grep volcano.sh
+       期望 limits: volcano.sh/vgpu-memory: "2" (或你填的值)
+
+[ ] 16. Pod 内 nvidia-smi
+       kubectl exec -n clearml <pod> -- nvidia-smi --query-gpu=memory.total --format=csv
+       期望约 2048 MiB (当 vgpu_memory=2)
+
+[ ] 17. agent 日志确认 override
+       kubectl logs deploy/clearml-agent -n clearml | grep "task=<id>"
+
+--- 回滚 ---
+
+[ ] helm upgrade 设 vgpuHook.enabled=false -> 回退到仅 basePodTemplate 固定配额
+[ ] 或重新启用多队列方案
+
+--- 常见错误 ---
+
+  vgpu_memory=2048 在 factor=1024 集群 -> 请求 ~2TB, 调度失败或异常
+  未启用 vgpuHook -> VGPU 段仅 UI 展示, Pod 仍用 Helm 默认值
+  helm upgrade 覆盖 clearml-agent-pt -> 丢 schedulerName, 需重新 kubectl replace 或 fork chart

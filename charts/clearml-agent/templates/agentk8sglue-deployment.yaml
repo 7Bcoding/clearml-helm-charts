@@ -82,6 +82,11 @@ spec:
               subPath: "{{ .name }}"
               readOnly: true
             {{- end }}
+            {{- if .Values.agentk8sglue.vgpuHook.enabled }}
+            - name: vgpu-hook
+              mountPath: /root/vgpu
+              readOnly: true
+            {{- end }}
           env:
             - name: CLEARML_API_HOST
               value: "{{.Values.agentk8sglue.apiServerUrlReference}}"
@@ -141,6 +146,16 @@ spec:
               value: "{{.Values.agentk8sglue.defaultContainerImage}}"
             - name: K8S_GLUE_QUEUE
               value: {{ .Values.agentk8sglue.queue }}
+            {{- if .Values.agentk8sglue.vgpuHook.enabled }}
+            - name: PYTHONSTARTUP
+              value: "/root/vgpu/bootstrap_k8s_vgpu_patch.py"
+            - name: CLEARML_VGPU_HOOK_DIR
+              value: "/root/vgpu"
+            - name: CLEARML_VGPU_SECTION
+              value: {{ .Values.agentk8sglue.vgpuHook.section | quote }}
+            - name: CLEARML_VGPU_MEMORY_FACTOR
+              value: {{ .Values.agentk8sglue.vgpuHook.gpuMemoryFactor | quote }}
+            {{- end }}
             {{- if .Values.agentk8sglue.extraEnvs }}
             {{ toYaml .Values.agentk8sglue.extraEnvs | nindent 12 }}
             {{- end }}
@@ -184,6 +199,12 @@ spec:
           secret:
             secretName: {{ include "clearmlAgent.fullname" . }}-afm
         {{ end }}
+        {{- if .Values.agentk8sglue.vgpuHook.enabled }}
+        - name: vgpu-hook
+          configMap:
+            name: {{ include "clearmlAgent.fullname" . }}-vgpu-hook
+            defaultMode: 0444
+        {{- end }}
         {{- if .Values.agentk8sglue.volumes }}
         {{- toYaml .Values.agentk8sglue.volumes | nindent 8 }}
         {{- end }}
