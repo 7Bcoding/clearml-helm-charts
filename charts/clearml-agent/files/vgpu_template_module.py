@@ -4,14 +4,20 @@ Users declare resources in the SDK before execute_remotely():
 
     task.connect({"vgpu_number": 1, "vgpu_memory": 2, "vgpu_cores": 30}, name="VGPU")
 
-``vgpu_memory`` is passed verbatim to ``volcano.sh/vgpu-memory``. Its physical meaning
-depends on volcano-vgpu-device-plugin ``--gpu-memory-factor``:
+``vgpu_memory`` is passed **verbatim** to ``volcano.sh/vgpu-memory``; this module does
+not convert units. ``CLEARML_VGPU_MEMORY_FACTOR`` is validation-only: it must match the
+device plugin's ``--gpu-memory-factor`` so the hook can warn about values that look like
+the wrong unit. The physical meaning of the value is therefore:
 
     factor=1024  ->  SDK value 2 means 2 GiB (recommended on large GPUs)
     factor=1     ->  SDK value 2048 means 2048 MiB
 
 Set agent env ``CLEARML_VGPU_MEMORY_FACTOR`` to match the device plugin (Helm value
 ``agentk8sglue.vgpuHook.gpuMemoryFactor``).
+
+Optional agent env:
+    CLEARML_VGPU_MODE       volcano.sh/vgpu-mode annotation (default "hami-core"; empty disables)
+    CLEARML_VGPU_CONTAINER  name of the container to receive vGPU limits (default: first container)
 """
 from __future__ import print_function
 
@@ -20,6 +26,7 @@ import os
 
 DEFAULT_VGPU_SECTION = "VGPU"
 DEFAULT_MEMORY_FACTOR = int(os.environ.get("CLEARML_VGPU_MEMORY_FACTOR", "1024") or "1024")
+DEFAULT_VGPU_MODE = "hami-core"
 
 VGPU_LIMIT_KEYS = {
     "vgpu_number": "volcano.sh/vgpu-number",
@@ -30,6 +37,18 @@ VGPU_LIMIT_KEYS = {
 
 def vgpu_section_name():
     return os.environ.get("CLEARML_VGPU_SECTION", DEFAULT_VGPU_SECTION)
+
+
+def vgpu_mode():
+    """volcano.sh/vgpu-mode annotation value; empty string disables the annotation."""
+    if "CLEARML_VGPU_MODE" in os.environ:
+        return os.environ["CLEARML_VGPU_MODE"].strip()
+    return DEFAULT_VGPU_MODE
+
+
+def target_container_name():
+    """Optional container name to receive vGPU limits (default: first container)."""
+    return (os.environ.get("CLEARML_VGPU_CONTAINER") or "").strip()
 
 
 def _task_hyperparams(task_data):
@@ -178,6 +197,20 @@ def _container_paths(template):
     return spec.setdefault("containers", [])
 
 
+def _select_container(containers):
+    """Return the container to patch: by CLEARML_VGPU_CONTAINER name, else the first."""
+    name = target_container_name()
+    if name:
+        for container in containers:
+            if isinstance(container, dict) and container.get("name") == name:
+                return container
+        print(
+            "[vgpu-hook] container %r not found (have %s); falling back to first container"
+            % (name, [c.get("name") for c in containers if isinstance(c, dict)])
+        )
+    return containers[0]
+
+
 def apply_vgpu_params(template, params):
     if not params:
         return template
@@ -188,7 +221,8 @@ def apply_vgpu_params(template, params):
         print("[vgpu-hook] template has no containers, skip vGPU override")
         return template
 
-    resources = containers[0].setdefault("resources", {})
+    container = _select_container(containers)
+    resources = container.setdefault("resources", {})
     limits = resources.setdefault("limits", {})
     requests = resources.setdefault("requests", {})
     applied = {}
@@ -199,9 +233,11 @@ def apply_vgpu_params(template, params):
             requests[k8s_key] = value
             applied[k8s_key] = value
 
-    metadata = template.setdefault("metadata", {})
-    annotations = metadata.setdefault("annotations", {})
-    annotations.setdefault("volcano.sh/vgpu-mode", "hami-core")
+    mode = vgpu_mode()
+    if mode:
+        metadata = template.setdefault("metadata", {})
+        annotations = metadata.setdefault("annotations", {})
+        annotations.setdefault("volcano.sh/vgpu-mode", mode)
     print("[vgpu-hook] applied pod resources: %s" % applied)
     return template
 

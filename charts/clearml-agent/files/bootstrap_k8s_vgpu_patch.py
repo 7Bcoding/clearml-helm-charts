@@ -2,9 +2,16 @@
 
 Loaded by run_k8s_glue_with_vgpu_hook.py in the same Python process as k8s-glue.
 (Python 3 PYTHONSTARTUP is interactive-only and does not run for scripts.)
+
+This monkeypatches the open-source agent's private ``K8sIntegration._kubectl_apply``
+because that agent does not yet expose the official
+``CLEARML_K8S_GLUE_TEMPLATE_MODULE`` hook. The patch is defensive: if the agent
+internals change shape, it logs a clear WARNING and leaves the agent untouched so
+the failure is visible instead of silently dropping vGPU limits.
 """
 from __future__ import print_function
 
+import inspect
 import os
 import sys
 
@@ -13,28 +20,66 @@ if _HOOK_DIR not in sys.path:
     sys.path.insert(0, _HOOK_DIR)
 
 
+def _resolve_task_args(bound_args):
+    """Pull task_id / task_data from the bound _kubectl_apply call by name.
+
+    Using the inspected signature avoids brittle positional indexes: the agent
+    calls _kubectl_apply with keyword arguments, and the parameter order has
+    changed across versions.
+    """
+    arguments = bound_args.arguments
+    return arguments.get("task_id"), arguments.get("task_data")
+
+
 def _install_patch():
     try:
         from clearml_agent.glue import k8s as k8s_module
         from clearml_agent.glue.k8s import K8sIntegration
     except ImportError as exc:
-        print("[vgpu-hook] import clearml_agent failed, patch skipped: %s" % exc)
+        print("[vgpu-hook] WARNING: import clearml_agent failed, vGPU limits NOT applied: %s" % exc)
         return
 
     if getattr(K8sIntegration, "_clearml_vgpu_hook_installed", False):
         return
 
+    original = getattr(K8sIntegration, "_kubectl_apply", None)
+    if not callable(original):
+        print(
+            "[vgpu-hook] WARNING: K8sIntegration._kubectl_apply not found; "
+            "agent internals changed, vGPU limits NOT applied"
+        )
+        return
+
+    if not hasattr(k8s_module, "yaml") or not hasattr(k8s_module.yaml, "dump"):
+        print(
+            "[vgpu-hook] WARNING: k8s glue no longer serializes via yaml.dump; "
+            "agent internals changed, vGPU limits NOT applied"
+        )
+        return
+
+    try:
+        signature = inspect.signature(original)
+    except (TypeError, ValueError) as exc:
+        print("[vgpu-hook] WARNING: cannot inspect _kubectl_apply signature: %s" % exc)
+        signature = None
+
     import vgpu_template_module
 
     if not hasattr(K8sIntegration, "_kubectl_apply_original"):
-        K8sIntegration._kubectl_apply_original = K8sIntegration._kubectl_apply
+        K8sIntegration._kubectl_apply_original = original
 
     def _kubectl_apply_with_vgpu(self, *args, **kwargs):
-        task_data = kwargs.get("task_data")
         task_id = kwargs.get("task_id")
-        if task_data is None and len(args) >= 15:
-            task_id = args[8]
-            task_data = args[14]
+        task_data = kwargs.get("task_data")
+        if (task_id is None or task_data is None) and signature is not None:
+            try:
+                bound = signature.bind(self, *args, **kwargs)
+                bound.apply_defaults()
+                bound_task_id, bound_task_data = _resolve_task_args(bound)
+                task_id = task_id if task_id is not None else bound_task_id
+                task_data = task_data if task_data is not None else bound_task_data
+            except TypeError as exc:
+                print("[vgpu-hook] WARNING: failed to bind _kubectl_apply args: %s" % exc)
 
         params = vgpu_template_module.resolve_vgpu_params(
             task_data,

@@ -23,7 +23,9 @@ agentk8sglue:
   vgpuHook:
     enabled: true
     section: VGPU
-    gpuMemoryFactor: 1024
+    gpuMemoryFactor: 1024     # 仅用于单位校验/告警, 不做换算
+    mode: hami-core           # 任务 Pod 的 volcano.sh/vgpu-mode 注解; "" 可禁用
+    containerName: ""         # 指定接收 vGPU limits 的容器名; 空=第一个容器
 
   extraEnvs:
     - name: "CLEARML_AGENT_NO_UPDATE"

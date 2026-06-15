@@ -157,6 +157,12 @@ spec:
               value: {{ .Values.agentk8sglue.vgpuHook.section | quote }}
             - name: CLEARML_VGPU_MEMORY_FACTOR
               value: {{ .Values.agentk8sglue.vgpuHook.gpuMemoryFactor | quote }}
+            - name: CLEARML_VGPU_MODE
+              value: {{ .Values.agentk8sglue.vgpuHook.mode | quote }}
+            {{- if .Values.agentk8sglue.vgpuHook.containerName }}
+            - name: CLEARML_VGPU_CONTAINER
+              value: {{ .Values.agentk8sglue.vgpuHook.containerName | quote }}
+            {{- end }}
             {{- end }}
             {{- if .Values.agentk8sglue.extraEnvs }}
             {{ toYaml .Values.agentk8sglue.extraEnvs | nindent 12 }}
