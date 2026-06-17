@@ -19,20 +19,6 @@ _HOOK_DIR = os.environ.get("CLEARML_VGPU_HOOK_DIR", "/root/vgpu")
 if _HOOK_DIR not in sys.path:
     sys.path.insert(0, _HOOK_DIR)
 
-# Config-only kinds the k8s glue may serialize alongside the task Pod; never
-# inject vGPU container limits into these. Anything else (Pod, or a template
-# with no explicit kind) is still handled by apply_vgpu_params.
-_NON_POD_KINDS = frozenset((
-    "ConfigMap",
-    "Secret",
-    "Service",
-    "ServiceAccount",
-    "PersistentVolumeClaim",
-    "Namespace",
-    "Role",
-    "RoleBinding",
-))
-
 
 def _resolve_task_args(bound_args):
     """Pull task_id / task_data from the bound _kubectl_apply call by name.
@@ -111,17 +97,7 @@ def _install_patch():
         orig_dump = k8s_module.yaml.dump
 
         def dump_with_vgpu(document, stream, **dump_kwargs):
-            # Only the task Pod carries the container we patch. If _kubectl_apply
-            # ever serializes a config-only object (ConfigMap/Secret/...) in the
-            # same call, skip it explicitly so we never mutate an unintended
-            # document. Pods (kind="Pod") and templates without an explicit kind
-            # still go through apply_vgpu_params, which self-protects when no
-            # container path is present.
-            if (
-                params
-                and isinstance(document, dict)
-                and document.get("kind") not in _NON_POD_KINDS
-            ):
+            if params and isinstance(document, dict):
                 document = vgpu_template_module.apply_vgpu_params(document, params)
             return orig_dump(document, stream, **dump_kwargs)
 
