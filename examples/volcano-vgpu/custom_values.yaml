@@ -1,3 +1,15 @@
+# multinode 队列 —— HAMi/vGPU 集群专用（节点 nvidia.com/gpu=0 时必须用本文件）
+#
+# 现象: Pod Pending, PodGroup 报 overused nvidia.com/gpu
+# 原因: 集群只有 volcano.sh/vgpu-*，没有 nvidia.com/gpu device plugin
+#
+# 部署:
+#   kubectl apply -f k8s/queue-multinode-vgpu.yaml
+#   helm upgrade --install clearml-agent-multinode charts/clearml-agent -n clearml \
+#     -f ~/clearml/examples/volcano_vgpu/k8s/agent-values-multinode-launch-vgpu.yaml
+#
+# 4090 整卡等价约 24GiB；A100-80G 请改 vgpu_memory。factor=1024 时单位为 GiB。
+
 clearml:
   existingAgentk8sglueSecret: "clearml-agent-creds"
 
@@ -6,69 +18,95 @@ agentk8sglue:
     repository: "allegroai/clearml-agent-k8s-base"
     tag: "1.24-21"
 
-  replicaCount: 1
-
   apiServerUrlReference: "http://10.10.36.6:30008"
   fileServerUrlReference: "http://10.10.36.6:30081"
   webServerUrlReference: "http://10.10.36.6:30080"
   clearmlcheckCertificate: false
 
-  # 队列
-  queue: volcano-queue
-
-  # 任务默认镜像：必须带 CUDA 运行时
+  queue: multinode-full-gpu
+  createQueueIfNotExists: false
   defaultContainerImage: nvidia/cuda:12.4.1-runtime-ubuntu22.04
 
-  # SDK Task.connect(..., name="VGPU") 按任务覆盖 vGPU (需 gpu-memory-factor=1024, 单位 GiB)
+  # 自定义 vGPU + 多机（灵活方案）：vgpuHook 开，读 Task 的 VGPU 段
+  # (vgpu_number / vgpu_memory / vgpu_cores) 按任务把 volcano.sh/vgpu-* 注入到
+  # 每个 Pod（master 与各 worker clone 都会注入）。资源**不写死**在 basePodTemplate，
+  # 算法工程师在脚本里 task.connect({...}, name="VGPU") 自定义：
+  #   整卡 → vgpu_cores:100 + 整卡显存；切片 → 填更小的 cores/memory。
+  # 隔离仍由集群侧 HAMi webhook 按 Pod 的 vgpu 资源执行。
+  #
+  # 另一种取向（每 Pod 固定整卡、脚本零改）：把本段设 enabled:false，并把
+  # volcano.sh/vgpu-* 静态写进下方 basePodTemplate.resources。二选一，勿同时。
   vgpuHook:
     enabled: true
     section: VGPU
-    gpuMemoryFactor: 1024     # 仅用于单位校验/告警, 不做换算
-    mode: hami-core           # 任务 Pod 的 volcano.sh/vgpu-mode 注解; "" 可禁用
-    containerName: ""         # 指定接收 vGPU limits 的容器名; 空=第一个容器
+    gpuMemoryFactor: 1024
+    mode: hami-core
 
   extraEnvs:
     - name: "CLEARML_AGENT_NO_UPDATE"
       value: "true"
 
-  # ===== 任务 Pod 模板：Volcano + vGPU 的核心配置都在这里 =====
   basePodTemplate:
-
-    # 交给 Volcano 调度（而不是 default-scheduler）
     schedulerName: volcano
     runtimeClassName: nvidia
-    hostPID: true
 
     annotations:
-      # 可选：显存隔离模式，hami-core（软隔离+拦截）或 mig
       volcano.sh/vgpu-mode: "hami-core"
+      # 避免 PodGroup 落到 default 队列（按 Volcano 版本二选一，无效则试 scheduling.volcano.sh/queue-name）
+      volcano.sh/queue-name: multinode-full-gpu
 
-    # 默认 vGPU (任务未指定 VGPU 段时使用); gpu-memory-factor=1024 时单位为 GiB
+    # vGPU 资源不写死在此 —— 由 vgpuHook 按 Task 的 VGPU 段注入（每 Pod 一份）
     resources:
-      limits:
-        volcano.sh/vgpu-number: 1
-        volcano.sh/vgpu-memory: 2   # 2 GiB
-        volcano.sh/vgpu-cores: 30
       requests:
-        cpu: "4"
-        memory: 16Gi
+        cpu: "8"
+        memory: 32Gi
+
+    env:
+      - name: CLEARML_MULTI_NODE_MASTER_DEF_ADDR
+        valueFrom:
+          fieldRef:
+            fieldPath: status.podIP
+      - name: NCCL_DEBUG
+        value: "INFO"
+      - name: NCCL_IB_DISABLE
+        value: "1"
+      - name: NCCL_SOCKET_IFNAME
+        value: "eth0"
+      - name: PIP_CACHE_DIR
+        value: /root/.cache/pip
+      # 生产建议：缓存目录按 queue / project / tenant 分开。
+      # venv cache 可以加速重复环境构建，但它不是用户隔离边界。
+      - name: CLEARML_AGENT_VENV_CACHE_PATH
+        value: /root/.clearml/venvs-cache
+      - name: CLEARML_AGENT__AGENT__PACKAGE_MANAGER__SYSTEM_SITE_PACKAGES
+        value: "false"
+      - name: CLEARML_AGENT__AGENT__PIP_DOWNLOAD_CACHE__ENABLED
+        value: "true"
+      - name: CLEARML_AGENT__AGENT__PIP_DOWNLOAD_CACHE__PATH
+        value: '"/root/.cache/pip"'
+      - name: CLEARML_AGENT__AGENT__VCS_CACHE__ENABLED
+        value: "true"
+      - name: CLEARML_AGENT__AGENT__VCS_CACHE__PATH
+        value: '"/root/.clearml/vcs-cache"'
+      - name: CLEARML_AGENT__AGENT__VENVS_CACHE__MAX_ENTRIES
+        value: "20"
+      - name: CLEARML_AGENT__AGENT__VENVS_CACHE__FREE_SPACE_THRESHOLD_GB
+        value: "10"
+
+    nodeSelector:
+      gpu.present: "true"
 
     volumes:
       - name: clearml-cache
         hostPath:
-          path: /data/clearml-cache    # GPU 节点上固定目录，需事先 mkdir
+          path: /data/clearml-cache/multinode-full-gpu/clearml
+          type: DirectoryOrCreate
+      - name: pip-cache
+        hostPath:
+          path: /data/clearml-cache/multinode-full-gpu/pip
           type: DirectoryOrCreate
     volumeMounts:
       - name: clearml-cache
         mountPath: /root/.clearml
-
-    # 按你的 GPU 节点实际污点配置
-    tolerations: []
-    #  - key: "nvidia.com/gpu"
-    #    operator: Exists
-    #    effect: "NoSchedule"
-
-    nodeSelector: {}
-    #  gpu-type: a100
-
-    env: []
+      - name: pip-cache
+        mountPath: /root/.cache/pip
